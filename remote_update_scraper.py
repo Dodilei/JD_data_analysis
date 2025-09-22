@@ -5,7 +5,78 @@ import json
 from tqdm import tqdm
 import pandas as pd
 
-OUTPUT_FILENAME = "ru_opps.xlsx"
+OUTPUT_FILENAME = "ru_opps"
+
+domain = "https://serviceadvisor.deere.com"
+api_string = "/SAWeb/services/"
+csu_string = "controllerSoftwareUpdates/"
+machine_string = "startSession/"
+
+csu_url = domain + api_string + csu_string
+machine_url = domain + api_string + machine_string
+
+content_header = {"content-type": "application/vnd.johndeere.sa.startSession.v1+json"}
+
+
+def get_machine_info(session, pin):
+  payload = {"PIN": pin}
+
+  response = session.post(
+      machine_url,
+      headers=content_header,
+      data=json.dumps(payload) 
+  )
+
+  response.raise_for_status()
+
+  minfo = response.json()
+
+  return minfo.get('sessionID', None), minfo.get('isRemoteCapable', None), minfo.get('notRemoteCapableDesc', '')
+
+
+def get_update_info(software_info):
+  CU = software_info['softwareUpdateId'].split('^')[1]
+
+  if len(software_info['sectionDetails']) != 1:
+    raise Exception('Invalid number of section details')
+
+  upd_info = software_info['sectionDetails'][0]
+
+  parsed_info = {
+      'controller': CU,
+      'title': upd_info.get('tla', None),
+      'description': upd_info.get('description', None),
+      'current_version': upd_info.get('softwareVersion', None),
+      'available_version': upd_info.get('availableVersion', None),
+      'remote_update': software_info.get('remoteCertified', None)
+  }
+
+  parsed_info['update_available'] = parsed_info['current_version'] != parsed_info['available_version']
+
+  return parsed_info
+
+
+def get_auth_info(session, session_id):
+
+  auth_url = domain + api_string + session_id + '/machineInfo/pt'
+
+  payload = '{"timeStamp":null}'
+
+  response = session.post(auth_url, headers=content_header, data=payload)
+
+  if 200 <= response.status_code <= 299:
+    is_authorized = True
+  elif response.status_code == 403:
+    is_authorized = False
+  else:
+    print(response.status_code)
+    response.raise_for_status()
+
+  return is_authorized
+
+
+
+
 
 def remote_update_scraper():
   print('Starting Remote Update Scraper\n')
@@ -16,18 +87,6 @@ def remote_update_scraper():
 
   pin_list = machines[machines.maker == 'JOHN DEERE'].index.tolist()
   print(f"Número de PINs carregados: {len(pin_list)}")
-
-  domain = "https://serviceadvisor.deere.com"
-  api_string = "/SAWeb/services/"
-  csu_string = "controllerSoftwareUpdates/"
-  machine_string = "startSession/"
-
-  csu_url = domain + api_string + csu_string
-  machine_url = domain + api_string + machine_string
-
-  print('\nCreating request session...')
-
-  session = requests.Session()
 
   print('Loading credentials: ', end='')
   with open('./secrets/credentials.json', 'r') as f:
@@ -40,46 +99,12 @@ def remote_update_scraper():
     print('Failed to get credentials.')
     return 0
 
+  print('\nCreating request session...')
+
+  session = requests.Session()
+
   session.cookies.set("at_check", "true", domain=".deere.com", path="/")
   session.cookies.set("SESSION", session_cookie, domain="serviceadvisor.deere.com", path="/")
-
-  header_machine = {"Content-Type": "application/vnd.johndeere.sa.startSession.v1+json"}
-
-  def get_machine_remotecap(session, pin):
-    payload = {"PIN": pin}
-
-    response = session.post(
-        machine_url,
-        headers=header_machine,
-        data=json.dumps(payload) 
-    )
-
-    response.raise_for_status()
-
-    minfo = response.json()
-
-    return minfo.get('isRemoteCapable', None), minfo.get('notRemoteCapableDesc', '')
-
-  def get_update_info(software_info):
-    CU = software_info['softwareUpdateId'].split('^')[1]
-
-    if len(software_info['sectionDetails']) != 1:
-      raise Exception('Invalid number of section details')
-
-    upd_info = software_info['sectionDetails'][0]
-
-    parsed_info = {
-        'controller': CU,
-        'title': upd_info.get('tla', None),
-        'description': upd_info.get('description', None),
-        'current_version': upd_info.get('softwareVersion', None),
-        'available_version': upd_info.get('availableVersion', None),
-        'remote_update': software_info.get('remoteCertified', None)
-    }
-
-    parsed_info['update_available'] = parsed_info['current_version'] != parsed_info['available_version']
-
-    return parsed_info
 
   print('Session created. Starting scraping loop.\n')
 
@@ -99,11 +124,18 @@ def remote_update_scraper():
   for pin in pb_iterator:
     pb_iterator.set_postfix_str(f"Processing PIN: {pin}")
 
+    session_id, is_capable, remcap_desc, is_authorized = None, None, None, None
     try:
-      is_capable, remcap_desc = get_machine_remotecap(session, pin)
+      session_id, is_capable, remcap_desc = get_machine_info(session, pin)
+      is_authorized = get_auth_info(session, session_id)
     except:
       errorbox['machine_info_missing'].append(pin)
-      is_capable, remcap_desc = None, None
+
+    machine_info = {
+      'remote_capable':is_capable,
+      'capability_description':remcap_desc,
+      'is_authorized': is_authorized
+    }
 
     try:
       assert isinstance(pin, str)
@@ -128,7 +160,7 @@ def remote_update_scraper():
         errorbox['in_parse_error'].append((pin, idx, sv))
         continue
       if None in update_info.values(): errorbox['missing_value'].append((pin, idx, sv))
-      machine_updates.append({'pin':pin, **update_info, 'remote_capable':is_capable, 'capability_description':remcap_desc})
+      machine_updates.append({'pin':pin, **update_info, **machine_info})
 
     if machine_updates:
       updates.extend(machine_updates)
@@ -173,15 +205,18 @@ def remote_update_scraper():
   print('Data processed.')
   print('Creating excel file...')
 
-  try:
-    writer = pd.ExcelWriter('../'+OUTPUT_FILENAME, engine='xlsxwriter')
-  except Exception as e:
-    print(f'Failed to start excel writer. Error: {e}')
-    return 0
+  for i in range(5):
+    postfix = str(i) if i != 0 else ''
+    try:
+      writer = pd.ExcelWriter('../'+OUTPUT_FILENAME+postfix+'.xlsx', engine='xlsxwriter')
+    except Exception as e:
+      print(f'Failed to start excel writer. Error: {e}')
+      print(f'Writing to new filename.')
 
   org_opp_count.to_excel(writer, sheet_name='Contagem de Oportunidades', index=True)
 
-  opportunities_renamed = opportunities[['pin', 'orgname', 'model', 'title', 'description', 'current_version', 'available_version', 'remote_update', 'remote_capable', 'capability_description']].rename(columns={
+  opportunities_renamed = opportunities[['pin', 'orgname', 'model', 'title', 'description', 'current_version', 'available_version', 'remote_update', 'remote_capable', 'capability_description', 'is_authorized']].rename(
+    columns={
       'pin': 'PIN',
       'orgname': 'Organização',
       'model': 'Modelo',
@@ -192,10 +227,12 @@ def remote_update_scraper():
       'remote_update': 'Att Remota',
       'remote_capable': 'Conexão remota',
       'capability_description': 'Descrição da conexão',
+      'is_authorized': 'Autorizado',
   })
 
   opportunities_renamed['Att Remota'] = opportunities_renamed['Att Remota'].map({True: 'SIM', False: 'NAO'})
   opportunities_renamed['Conexão remota'] = opportunities_renamed['Conexão remota'].map({True: 'SIM', False: 'NAO'})
+  opportunities_renamed['Autorizado'] = opportunities_renamed['Autorizado'].map({True: 'SIM', False: 'NAO'})
   opportunities_renamed['Descrição da conexão'] = opportunities_renamed['Descrição da conexão'].str.replace('_', ' ').str.capitalize()
   opportunities_renamed.to_excel(writer, sheet_name='Oportunidades', index=False)
 
