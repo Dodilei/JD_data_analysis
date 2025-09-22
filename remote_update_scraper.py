@@ -15,7 +15,8 @@ machine_string = "startSession/"
 csu_url = domain + api_string + csu_string
 machine_url = domain + api_string + machine_string
 
-content_header = {"content-type": "application/vnd.johndeere.sa.startSession.v1+json"}
+startsession_header = {"content-type": "application/vnd.johndeere.sa.startSession.v1+json"}
+machineinfo_header = {"content-type": "application/vnd.johndeere.sa.getMachineInfo.v1+json"}
 
 
 def get_machine_info(session, pin):
@@ -23,7 +24,7 @@ def get_machine_info(session, pin):
 
   response = session.post(
       machine_url,
-      headers=content_header,
+      headers=startsession_header,
       data=json.dumps(payload) 
   )
 
@@ -62,14 +63,13 @@ def get_auth_info(session, session_id):
 
   payload = '{"timeStamp":null}'
 
-  response = session.post(auth_url, headers=content_header, data=payload)
+  response = session.post(auth_url, headers=machineinfo_header, data=payload)
 
   if 200 <= response.status_code <= 299:
     is_authorized = True
   elif response.status_code == 403:
     is_authorized = False
   else:
-    print(response.status_code)
     response.raise_for_status()
 
   return is_authorized
