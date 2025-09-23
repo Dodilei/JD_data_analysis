@@ -11,13 +11,22 @@ domain = "https://serviceadvisor.deere.com"
 api_string = "/SAWeb/services/"
 csu_string = "controllerSoftwareUpdates/"
 machine_string = "startSession/"
+auth_string = "UnauthorizedPins/"
 
 csu_url = domain + api_string + csu_string
 machine_url = domain + api_string + machine_string
+auth_url = domain + api_string + auth_string
 
 startsession_header = {"content-type": "application/vnd.johndeere.sa.startSession.v1+json"}
 machineinfo_header = {"content-type": "application/vnd.johndeere.sa.getMachineInfo.v1+json"}
+unauth_header = {'content-type': 'application/vnd.johndeere.sa.pin.getUnauthorizedPins.v1+json'}
 
+
+def make_block_iterator(org_iterator, blocksize=100):
+  n = len(org_iterator)
+  block_indexes = [(i*blocksize, (i+1)*blocksize) for i in range(n//blocksize)]
+  block_indexes.append((block_indexes[-1][1], n))
+  return (org_iterator[start:end] for start, end in block_indexes), n//blocksize+1
 
 def get_machine_info(session, pin):
   payload = {"PIN": pin}
@@ -32,7 +41,7 @@ def get_machine_info(session, pin):
 
   minfo = response.json()
 
-  return minfo.get('sessionID', None), minfo.get('isRemoteCapable', None), minfo.get('notRemoteCapableDesc', '')
+  return minfo.get('isRemoteCapable', None), minfo.get('notRemoteCapableDesc', '')
 
 
 def get_update_info(software_info):
@@ -57,22 +66,17 @@ def get_update_info(software_info):
   return parsed_info
 
 
-def get_auth_info(session, session_id):
+def get_auth_info(pins, session):
 
-  auth_url = domain + api_string + session_id + '/machineInfo/pt'
+  payload = {
+    'PIN': pins,
+    'jobId': []
+  }
 
-  payload = '{"timeStamp":null}'
+  response = session.post(auth_url, headers=unauth_header, data=json.dumps(payload))
+  response.raise_for_status()
 
-  response = session.post(auth_url, headers=machineinfo_header, data=payload)
-
-  if 200 <= response.status_code <= 299:
-    is_authorized = True
-  elif response.status_code == 403:
-    is_authorized = False
-  else:
-    response.raise_for_status()
-
-  return is_authorized
+  return response.json()
 
 
 
@@ -84,6 +88,7 @@ def remote_update_scraper():
   print('Importing machine data...')
   machines = pd.read_csv('../machine_data.csv', index_col=7, usecols=range(1,9), dtype=str)
   machines.drop_duplicates(inplace=True)
+  machines = machines.iloc[0:250].copy()
 
   pin_list = machines[machines.maker == 'JOHN DEERE'].index.tolist()
   print(f"Número de PINs carregados: {len(pin_list)}")
@@ -106,7 +111,26 @@ def remote_update_scraper():
   session.cookies.set("at_check", "true", domain=".deere.com", path="/")
   session.cookies.set("SESSION", session_cookie, domain="serviceadvisor.deere.com", path="/")
 
-  print('Session created. Starting scraping loop.\n')
+  print('Session created.')
+  print()
+
+  print('Getting remote access authorization data...')
+
+  bck_iterator, total_blocks = make_block_iterator(pin_list)
+
+  try:
+    unauthorized_pins = []
+    for pin_block in tqdm(bck_iterator, total=total_blocks, desc="Requesting r.a. authorization data"):
+      unauthorized_pins.extend(get_auth_info(pin_block, session).get('unAuthorizedPinList', []))
+  except Exception as e:
+    print(f'Failed: {e}')
+    return 1
+
+  print('Remote access unauthorized pins identified.')
+  print()
+
+  print('Starting remote update scraping loop...')
+  print()
 
   updates = []
 
@@ -119,22 +143,21 @@ def remote_update_scraper():
       'request_fail':[],
   }
 
-  pb_iterator = tqdm(pin_list, desc="Scraping software update info")
+  pin_iterator = tqdm(pin_list, desc="Scraping remote update info")
 
-  for pin in pb_iterator:
-    pb_iterator.set_postfix_str(f"Processing PIN: {pin}")
+  for pin in pin_iterator:
+    pin_iterator.set_postfix_str(f"Processing PIN: {pin}")
 
-    session_id, is_capable, remcap_desc, is_authorized = None, None, None, None
+    is_capable, remcap_desc = None, None
     try:
-      session_id, is_capable, remcap_desc = get_machine_info(session, pin)
-      is_authorized = get_auth_info(session, session_id)
+      is_capable, remcap_desc = get_machine_info(session, pin)
     except:
       errorbox['machine_info_missing'].append(pin)
 
     machine_info = {
       'remote_capable':is_capable,
       'capability_description':remcap_desc,
-      'is_authorized': is_authorized
+      'is_authorized': pin not in unauthorized_pins,
     }
 
     try:
@@ -175,6 +198,7 @@ def remote_update_scraper():
   print(f'\tMachines without software info: {len(errorbox["empty_pin"])}')
   print(f'\tMachines with unreadable data: {len(errorbox["main_parse_error"])}')
   print(f'\tMachines with no remote capability: {len(set([u['pin'] for u in updates if not u["remote_capable"]]))}')
+  print(f'\tMachines unauthorized for remote updates: {len(unauthorized_pins)}')
   print()
   print(f'\tSoftware instances found: {len(updates)}')
   print(f'\tCollected instances with missing values: {len(errorbox["missing_value"])}')
