@@ -22,12 +22,6 @@ machineinfo_header = {"content-type": "application/vnd.johndeere.sa.getMachineIn
 unauth_header = {'content-type': 'application/vnd.johndeere.sa.pin.getUnauthorizedPins.v1+json'}
 
 
-def make_block_iterator(org_iterator, blocksize=100):
-  n = len(org_iterator)
-  block_indexes = [(i*blocksize, (i+1)*blocksize) for i in range(n//blocksize)]
-  block_indexes.append((block_indexes[-1][1], n))
-  return (org_iterator[start:end] for start, end in block_indexes), n//blocksize+1
-
 def get_machine_info(session, pin):
   payload = {"PIN": pin}
 
@@ -116,17 +110,13 @@ def remote_update_scraper():
 
   print('Getting remote access authorization data...')
 
-  bck_iterator, total_blocks = make_block_iterator(pin_list)
-
   try:
-    unauthorized_pins = []
-    for pin_block in tqdm(bck_iterator, total=total_blocks, desc="Requesting r.a. authorization data"):
-      unauthorized_pins.extend(get_auth_info(pin_block, session).get('unAuthorizedPinList', []))
+    unauthorized_pins = get_auth_info(pin_list, session).get('unAuthorizedPinList', [])
   except Exception as e:
     print(f'Failed: {e}')
     return 1
 
-  print('Remote access unauthorized pins identified.')
+  print(f'Remote access unauthorized pins identified. (n={len(unauthorized_pins)}')
   print()
 
   print('Starting remote update scraping loop...')
