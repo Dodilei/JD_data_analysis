@@ -88,6 +88,7 @@ def remote_update_scraper():
   print('Importing machine data...')
   machines = pd.read_csv('../machine_data.csv', index_col=7, usecols=range(1,9), dtype=str)
   machines.drop_duplicates(inplace=True)
+  machines = machines.loc[machines.index.dropna()]
 
   pin_list = machines[machines.maker == 'JOHN DEERE'].index.tolist()
   print(f"Número de PINs carregados: {len(pin_list)}")
