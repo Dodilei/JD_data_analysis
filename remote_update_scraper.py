@@ -17,8 +17,9 @@ csu_url = domain + api_string + csu_string
 machine_url = domain + api_string + machine_string
 auth_url = domain + api_string + auth_string
 
+user_agent = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"}
+
 startsession_header = {"content-type": "application/vnd.johndeere.sa.startSession.v1+json"}
-machineinfo_header = {"content-type": "application/vnd.johndeere.sa.getMachineInfo.v1+json"}
 unauth_header = {'content-type': 'application/vnd.johndeere.sa.pin.getUnauthorizedPins.v1+json'}
 
 
@@ -33,7 +34,7 @@ def get_machine_info(session, pin):
 
   response = session.post(
       machine_url,
-      headers=startsession_header,
+      headers=  {**user_agent, **startsession_header},
       data=json.dumps(payload) 
   )
 
@@ -73,7 +74,7 @@ def get_auth_info(pins, session):
     'jobId': []
   }
 
-  response = session.post(auth_url, headers=unauth_header, data=json.dumps(payload))
+  response = session.post(auth_url, headers=  {**user_agent, **unauth_header}, data=json.dumps(payload))
   response.raise_for_status()
 
   return response.json()
@@ -116,12 +117,30 @@ def remote_update_scraper():
 
   print('Getting remote access authorization data...')
 
-  bck_iterator, total_blocks = make_block_iterator(pin_list)
+  pb_size = 10
+  bck_iterator, total_blocks = make_block_iterator(pin_list, blocksize=pb_size)
+  pb_iterator = tqdm(
+    bck_iterator,
+    total=total_blocks,
+    desc="Requesting r.a. authorization data",
+    unit="pin",
+    unit_scale=pb_size,
+    colour="#ffc9dd"
+  )
 
   try:
     unauthorized_pins = []
-    for pin_block in tqdm(bck_iterator, total=total_blocks, desc="Requesting r.a. authorization data"):
-      unauthorized_pins.extend(get_auth_info(pin_block, session).get('unAuthorizedPinList', []))
+    for pin_block in pb_iterator:
+      pb_iterator.set_postfix_str("(no T/O)")
+      while True:
+        try:
+          to_counter = 0
+          unauthorized_pins.extend(get_auth_info(pin_block, session).get('unAuthorizedPinList', []))
+          break
+        except requests.ReadTimeout:
+          to_counter += 1
+          pb_iterator.set_postfix_str(f"(T/O {to_counter})")
+
   except Exception as e:
     print(f'Failed: {e}')
     return 1
@@ -143,7 +162,12 @@ def remote_update_scraper():
       'request_fail':[],
   }
 
-  pin_iterator = tqdm(pin_list, desc="Scraping remote update info")
+  pin_iterator = tqdm(
+    pin_list,
+    desc="Scraping remote update info",
+    unit="pin",
+    colour="#ffc9dd"
+  )
 
   for pin in pin_iterator:
     pin_iterator.set_postfix_str(f"Processing PIN: {pin}")
