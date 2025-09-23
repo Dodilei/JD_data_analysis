@@ -233,6 +233,7 @@ def remote_update_scraper():
     postfix = str(i) if i != 0 else ''
     try:
       writer = pd.ExcelWriter('../'+OUTPUT_FILENAME+postfix+'.xlsx', engine='xlsxwriter')
+      break
     except Exception as e:
       print(f'Failed to start excel writer. Error: {e}')
       print(f'Writing to new filename.')
