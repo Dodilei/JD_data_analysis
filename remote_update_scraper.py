@@ -74,7 +74,7 @@ def get_auth_info(pins, session):
     'jobId': []
   }
 
-  response = session.post(auth_url, headers=  {**user_agent, **unauth_header}, data=json.dumps(payload))
+  response = session.post(auth_url, headers={**user_agent, **unauth_header}, data=json.dumps(payload))
   response.raise_for_status()
 
   return response.json()
@@ -110,7 +110,7 @@ def remote_update_scraper():
   session = requests.Session()
 
   session.cookies.set("at_check", "true", domain=".deere.com", path="/")
-  session.cookies.set("SESSION", session_cookie, domain="serviceadvisor.deere.com", path="/")
+  session.cookies.set("SESSION", session_cookie, domain=domain, path="/")
 
   print('Session created.')
   print()
